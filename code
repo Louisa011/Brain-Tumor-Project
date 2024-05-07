@@ -1,0 +1,256 @@
+!pip install kaggle
+import os
+os.environ['KAGGLE_CONFIG_DIR'] = "/content"
+!kaggle datasets download -d masoudnickparvar/brain-tumor-mri-dataset
+!unzip \*.zip && rm *.zip
+from google.colab import drive
+drive.mount('/content/drive')
+
+import os
+import gc
+import io
+import cv2
+# Third-party library imports
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+from sklearn.utils import shuffle
+import tensorflow as tf
+from tensorflow import keras
+from keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint, TensorBoard, LambdaCallback
+from keras.models import Sequential, Model
+from keras.applications.resnet import ResNet50
+from keras.preprocessing.image import ImageDataGenerator
+from keras.applications import ResNet50
+from keras.layers import Dense, GlobalAveragePooling2D, Dropout
+from tensorflow import keras
+from keras import Sequential
+from keras.layers import Input, Dense,Conv2D , MaxPooling2D, Flatten,BatchNormalization,Dropout,GlobalAveragePooling2D
+from tensorflow.keras.preprocessing import image_dataset_from_directory
+from keras.models import Model
+from keras.optimizers import Adam
+from keras.utils import to_categorical
+from sklearn.metrics import classification_report , confusion_matrix , accuracy_score
+from sklearn.model_selection import train_test_split
+from PIL import Image
+import warnings
+import tensorflow_hub as hub
+import random
+import matplotlib.pyplot as plt
+%matplotlib inline
+warnings.filterwarnings('ignore')
+
+# Local imports
+import itertools
+import datetime
+
+train_path = "/content/Training"
+test_path = "/content/Testing"
+
+gl_tr = "/content/Training/glioma"
+men_tr = "/content/Training/meningioma"
+no_tr = "/content/Training/notumor"
+pit_tr = "/content/Training/pituitary"
+
+
+gl_ts = "/content/Testing/glioma"
+men_ts = "/content/Testing/meningioma"
+no_ts = "/content/Testing/notumor"
+pit_ts = "/content/Testing/pituitary"
+
+gl_tr = os.listdir(gl_tr)
+men_tr = os.listdir(men_tr)
+no_tr = os.listdir(no_tr)
+pit_tr = os.listdir(pit_tr)
+
+gl_ts = os.listdir(gl_ts)
+men_ts = os.listdir(men_ts)
+no_ts = os.listdir(no_ts)
+pit_ts = os.listdir(pit_ts)
+# Training set labels
+gl_tr_label = [0] * len(gl_tr)
+men_tr_label = [1] * len(men_tr)
+no_tr_label = [2] * len(no_tr)
+pit_tr_label = [3] * len(pit_tr)
+
+# Testing set labels
+gl_ts_label = [0] * len(gl_ts)
+men_ts_label = [1] * len(men_ts)
+no_ts_label = [2] * len(no_ts)
+pit_ts_label = [3] * len(pit_ts)
+train_label = gl_tr_label + men_tr_label + no_tr_label + pit_tr_label
+test_label = gl_ts_label + men_ts_label + no_ts_label + pit_ts_label
+
+class_labels = ['glioma_tumor', 'meningioma_tumor', 'no_tumor', 'pituitary_tumor']
+label = train_label + test_label
+len(label)
+y = np.array(label)
+print(len(train_label))
+print(len(test_label))
+print(y)
+
+# Define the list of labels
+labels = ['glioma', 'meningioma', 'notumor', 'pituitary']
+
+# Define the paths to the training and testing datasets
+train_path = "/content/Training"
+test_path = "/content/Testing"
+
+# Define the image size for resizing
+image_size = 224  # ResNet50 input size
+
+# Initialize lists to store training and testing data
+x_train = []  # Training images
+y_train = []  # Training labels
+x_test = []   # Testing images
+y_test = []   # Testing labels
+
+# Update the code to load images as grayscale
+for label in labels:
+    # Training data
+    trainPath = os.path.join(train_path, label)
+    for file in tqdm(os.listdir(trainPath)):
+        try:
+            image = cv2.imread(os.path.join(trainPath, file), cv2.IMREAD_GRAYSCALE)  # Load images as grayscale
+            if image is not None:
+                # Ensure image dimensions match the desired size for resizing
+                image = cv2.resize(image, (image_size, image_size), interpolation=cv2.INTER_LINEAR)  # Resize images
+                x_train.append(image)
+                y_train.append(labels.index(label))
+        except Exception as e:
+            print(f"Error processing file {file}: {e}")
+
+    # Testing data
+    testPath = os.path.join(test_path, label)
+    for file in tqdm(os.listdir(testPath)):
+        try:
+            image = cv2.imread(os.path.join(testPath, file), cv2.IMREAD_GRAYSCALE)  # Load images as grayscale
+            if image is not None:
+                # Ensure image dimensions match the desired size for resizing
+                image = cv2.resize(image, (image_size, image_size), interpolation=cv2.INTER_LINEAR)  # Resize images
+                x_test.append(image)
+                y_test.append(labels.index(label))
+        except Exception as e:
+            print(f"Error processing file {file}: {e}")
+
+# Convert lists to NumPy arrays
+x_train = np.array(x_train).reshape(-1, image_size, image_size, 1) / 255.0  # Normalize pixel values and reshape for grayscale
+x_test = np.array(x_test).reshape(-1, image_size, image_size, 1) / 255.0
+y_train = to_categorical(y_train, num_classes=len(labels))
+y_test = to_categorical(y_test, num_classes=len(labels))
+
+# Convert grayscale images to RGB
+x_train_rgb = np.repeat(x_train, 3, axis=-1)
+x_test_rgb = np.repeat(x_test, 3, axis=-1)
+
+# Load pre-trained ResNet50 model
+base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(image_size, image_size, 3))
+
+# Freeze the base ResNet50 layers
+for layer in base_model.layers:
+    layer.trainable = False
+
+# Add custom classification head
+x = base_model.output
+x = GlobalAveragePooling2D()(x)
+x = Dropout(0.5)(x)
+predictions = Dense(len(labels), activation='softmax')(x)
+
+# Create the final model
+model = Model(inputs=base_model.input, outputs=predictions)
+
+# Compile the model
+adam = Adam(learning_rate=0.01)
+model.compile(optimizer=adam, loss='categorical_crossentropy', metrics=['accuracy'])
+
+# Print model summary
+model.summary()
+
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import accuracy_score
+
+# Define the number of folds
+n_splits = 5
+
+# Initialize StratifiedKFold
+cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+# Initialize lists to store cross-validation scores
+cv_scores = []
+
+# Perform cross-validation
+for train_index, val_index in cv.split(x_train_rgb, np.argmax(y_train, axis=1)):
+    # Split data into training and validation sets
+    x_train_fold, x_val_fold = x_train_rgb[train_index], x_train_rgb[val_index]
+    y_train_fold, y_val_fold = y_train[train_index], y_train[val_index]
+
+    # Train the model
+    history = model.fit(x_train_fold, y_train_fold, batch_size=64, epochs=32, verbose=1)
+
+    # Evaluate the model on the validation fold
+    val_loss, val_accuracy = model.evaluate(x_val_fold, y_val_fold, verbose=0)
+    cv_scores.append(val_accuracy)
+
+# Calculate the average cross-validation score
+average_cv_score = np.mean(cv_scores)
+
+print("Average Cross-Validation Accuracy:", average_cv_score)
+# Evaluate the model on the testing data
+score = model.evaluate(x_test_rgb, y_test, verbose=1)
+print('Test loss:', score[0])
+print('Test accuracy:', score[1])
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.metrics import confusion_matrix, precision_score
+import seaborn as sns
+
+# Predict the classes for the test data
+y_pred = model.predict(x_test_rgb)
+y_pred_classes = np.argmax(y_pred, axis=1)
+
+# Generate the confusion matrix
+cm = confusion_matrix(np.argmax(y_test, axis=1), y_pred_classes)
+
+# Calculate precision for each class
+precision = precision_score(np.argmax(y_test, axis=1), y_pred_classes, average=None)
+
+# Print the confusion matrix and precision values
+print("Confusion Matrix:")
+print(cm)
+print("\nPrecision:")
+for i, label in enumerate(labels):
+    print(f"{label}: {precision[i]:.4f}")
+
+# Plot the confusion matrix
+sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=labels, yticklabels=labels)
+plt.xlabel("Predicted")
+plt.ylabel("True")
+plt.title("Confusion Matrix")
+plt.show()
+
+import numpy as np
+from sklearn.metrics import recall_score, precision_score, f1_score
+
+# Calculate recall
+recall = recall_score(np.argmax(y_test, axis=1), y_pred_classes, average=None)
+
+# Calculate precision
+precision = precision_score(np.argmax(y_test, axis=1), y_pred_classes, average=None)
+
+# Calculate F1 score
+f1 = f1_score(np.argmax(y_test, axis=1), y_pred_classes, average=None)
+
+# Print the scores
+print("\nRecall:")
+for i, label in enumerate(labels):
+    print(f"{label}: {recall[i]:.4f}")
+
+print("\nPrecision:")
+for i, label in enumerate(labels):
+    print(f"{label}: {precision[i]:.4f}")
+
+print("\nF1 Score:")
+for i, label in enumerate(labels):
+    print(f"{label}: {f1[i]:.4f}")
+
